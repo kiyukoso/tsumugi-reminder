@@ -60,12 +60,28 @@ function main() {
     process.exit(1);
   }
 
-  // latest.yml 是 electron-updater 用来找新版本的清单，必须和安装包在同一个 release 里
+  // 只挑出**属于当前版本**的产物。dist/ 里常常还躺着旧版本的安装包，
+  // 按 *.exe 全量上传会把它们一起塞进这个 release。
   const files = fs.readdirSync(DIST).filter(f =>
-    f.endsWith('.exe') || f === 'latest.yml' || f.endsWith('.blockmap')
+    f === 'latest.yml' ||
+    (f.includes(`-${version}-`) && (f.endsWith('.exe') || f.endsWith('.blockmap')))
   );
   if (!files.some(f => f.endsWith('.exe')) || !files.includes('latest.yml')) {
-    console.error('dist/ 里缺少安装包或 latest.yml，先跑 npm run dist。');
+    console.error(`dist/ 里找不到 ${version} 的安装包或 latest.yml，先跑 npm run dist。`);
+    process.exit(1);
+  }
+
+  // latest.yml 里的版本号必须和 package.json 一致。
+  // 这是踩过的坑：electron-builder 的自动发布失败时不会重新生成这个清单，
+  // 于是 dist 里留下上一版的 latest.yml。带着它上传的话客户端永远发现不了
+  // 新版本，而且完全静默 —— 没有任何报错，只是更新再也不发生。
+  const manifest = fs.readFileSync(path.join(DIST, 'latest.yml'), 'utf8');
+  const mv = (manifest.match(/^version:\s*(.+)$/m) || [])[1];
+  if (!mv || mv.trim() !== version) {
+    console.error(
+      `latest.yml 里的版本是 ${mv ? mv.trim() : '(读不到)'}，但 package.json 是 ${version}。\n` +
+      '清单和产物对不上，客户端会永远发现不了这次更新。请先重新构建。'
+    );
     process.exit(1);
   }
 

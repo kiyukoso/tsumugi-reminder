@@ -63,12 +63,42 @@ git push --follow-tags
 npm run release          # 打包并上传到 GitHub Releases
 ```
 
-`npm run release` 需要 `GH_TOKEN` 环境变量（一个有 `repo` 权限的 GitHub token）。
-如果装了 `gh` 并登录过，这样拿：
+`npm run release` = `electron-builder` 构建 + `tools/release.js` 用 `gh` 上传，
+所以先 `gh auth login` 装好凭据（token 需要 `repo` 权限）。
+
+**这台机器上构建/上传必须加 `NODE_OPTIONS=--use-system-ca`：**
 
 ```bash
-export GH_TOKEN=$(gh auth token)
+export NODE_OPTIONS=--use-system-ca
 ```
+
+不加的话上传会以 `unable to verify the first certificate` 失败。原因是本机有东西
+做了 TLS 中间人（多半是杀毒或网络层），它的根证书装在 Windows 证书store 里，
+但不在 Node 自带的 CA 列表里。`--use-system-ca` 让 Node 改用系统证书store。
+注意 `gh` 本身不受影响（它是 Go 写的，走系统证书），所以会出现
+「`gh` 能登录、electron-builder 传不上去」这种看着很矛盾的现场。
+
+### 为什么不用 electron-builder 自带的 `--publish`
+
+`npm run release` 里的 `--publish never` 是**必须的**，两个原因：
+
+1. 它默认建**草稿**，而草稿对 electron-updater 不可见 —— 客户端永远发现不了新版本，
+   且不会有任何报错。
+2. 它会并发跑多条发布流水线，每条各自判断「release 不存在」然后各建一个。实测生成了
+   两个同标签 `v1.0.0` 的草稿，资源还被拆开：一个只有 `latest.yml` 和安装包，另一个
+   只有 blockmap。这样的 release 客户端拼不出完整下载地址。
+
+所以改成 `tools/release.js` 直接调 `gh`，一次一条、确定性的，并且显式不加 `--draft`。
+
+另外 electron-builder 的默认发布策略是「在打了 tag 的提交上自动发布」，
+`npm version` 会顺手打 tag，所以不加 `--publish never` 它就会自己动起来。
+
+### `latest.yml` 的版本必须和 `package.json` 一致
+
+`tools/release.js` 会在上传前检查这一点，不一致直接拒绝。这是踩过的坑：
+自动发布失败时 electron-builder **不会**重新生成这个清单，于是 `dist/` 里留下上一版的
+`latest.yml`。带着它上传的话，客户端拿到的"最新版本"还是旧的，更新永远不会发生 ——
+而且完全静默，没有任何报错。
 
 客户端的行为：启动 8 秒后静默查一次，发现新版本就后台下载；下完在设置齿轮上点一个小圆点，
 打开设置会看到「重启并安装」。用户直接退出应用的话，退出时也会自动装上。
