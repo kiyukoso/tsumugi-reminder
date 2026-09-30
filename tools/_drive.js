@@ -111,6 +111,28 @@ async function main() {
     return;
   }
 
+  // ---------------------------------------------------------- 鼠标输入
+  // 走 CDP 的真实输入事件，而不是渲染进程里 dispatchEvent —— 后者触发不了
+  // 浏览器自身的原生行为（拖拽、长按手势），测不出来就只能靠猜。
+  if (cmd === 'mouse') {
+    const [which, type, xs, ys] = process.argv.slice(3, 7);
+    const target = await pick(which);
+    if (!target) return;
+    const c = await connect(target.webSocketDebuggerUrl);
+    try {
+      await c.send('Input.dispatchMouseEvent', {
+        type,
+        x: Number(xs),
+        y: Number(ys),
+        button: 'left',
+        buttons: type === 'mouseReleased' ? 0 : 1,
+        clickCount: 1,
+      });
+      console.log(`已派发 ${type} @ (${xs}, ${ys})`);
+    } finally { c.close(); }
+    return;
+  }
+
   // ---------------------------------------------------------- 求值
   const target = await pick(cmd);
   if (!target) return;

@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 const {
   app, BrowserWindow, ipcMain, Menu, Tray, dialog,
@@ -156,12 +157,81 @@ function clampPetPosition() {
   return { x: nx, y: ny };
 }
 
+// setSize 期间置位，用来把「程序自己改尺寸」和「用户拖边缘」区分开
+let petSizing = false;
+
+/**
+ * 改桌宠窗口尺寸。
+ *
+ * 这里绕了个弯：窗口不能建成 resizable:false。
+ * Windows 会把不可调整大小的窗口按**当前尺寸**锁住最大/最小跟踪尺寸，
+ * 于是 setSize 只能把它改大、改不小 —— 实测设 700→300→900→460 这一串里，
+ * 只有 700 和 900（变大）生效，300 和 460 被系统默默忽略，窗口永久停在
+ * 最大的那个尺寸上。这正是用户报的「长按之后变大、松手也不恢复」。
+ *
+ * 而「在同一 tick 里 setResizable(true) → setSize → setResizable(false)」
+ * 也不行：第二次切换会把尺寸改动整个吞掉，实测变成完全改不动。
+ *
+ * 所以窗口始终 resizable: true（setSize 双向有效），改用 will-resize 事件
+ * 把**用户拖动边缘**拦掉，只放行程序自己的改动。
+ */
+function setPetWindowSize(w, h) {
+  if (!petWin || petWin.isDestroyed()) return;
+  petSizing = true;
+  petWin.setSize(w, h);
+  petSizing = false;
+}
+
+let petResizeFix = null;
+
+/**
+ * 桌宠窗口的尺寸只应该由 applyPetSize 决定。
+ *
+ * 实测遇到过窗口被外部改成 1026x942（预期 300x552）并保持不放的情况 ——
+ * 立绘跟着变大，用户看到的就是「长按桌宠之后它变大了、松手也不恢复」。
+ * 全项目只有 applyPetSize 一处 setSize，算出来的也对不上那个数字，
+ * 所以是 Windows 那边干的（贴靠、缩放或窗口管理器的介入），不是应用自己改的。
+ *
+ * 与其去堵一个看不到的源头，不如加一道自愈：发现尺寸对不上就改回去，
+ * 顺便把是谁改的记进日志 —— 下次再出现就能直接定位。
+ */
+function watchPetResize() {
+  if (!petWin || petWin.isDestroyed()) return;
+
+  petWin.on('resize', () => {
+    if (!petSize) return;
+    // 等一下再检查：applyPetSize 自己触发的 resize 事件也在路上，
+    // 立刻比对会把正常改动误判成外部干预
+    clearTimeout(petResizeFix);
+    petResizeFix = setTimeout(() => {
+      if (!petWin || petWin.isDestroyed()) return;
+      const [w, h] = petWin.getSize();
+
+      // 容差 2px：Windows 会把窗口尺寸按 DPI 缩放四舍五入。
+      // 比如 313 DIP 在 150% 下是 469.5 物理像素，取整回来就变成 314。
+      // 不容差的话这里会把正常的舍入当成外部干预，而且因为设 313 又会被
+      // 舍回 314，会变成一次一次改不完的死循环。
+      if (Math.abs(w - petSize.width) <= 2 && Math.abs(h - petSize.height) <= 2) return;
+
+      const msg = `[pet] 窗口尺寸被外部改成 ${w}x${h}，预期 ${petSize.width}x${petSize.height}，已改回`;
+      console.warn(msg);
+      try {
+        fs.appendFileSync(
+          path.join(app.getPath('userData'), 'pet-resize.log'),
+          `${new Date().toISOString()}  ${msg}\n`
+        );
+      } catch { /* 记不上就算了，不能因此影响主流程 */ }
+      setPetWindowSize(petSize.width, petSize.height);
+    }, 250);
+  });
+}
+
 /** 立绘或大小变了之后重新应用，并让渲染进程重新取图 */
 function applyPetSize() {
   petSize = computePetSize();
 
   if (petWin && !petWin.isDestroyed()) {
-    petWin.setSize(petSize.width, petSize.height);
+    setPetWindowSize(petSize.width, petSize.height);
     const pos = clampPetPosition();
     if (pos) store.setPet(pos);
     petWin.webContents.send('pet:spriteChanged');
@@ -208,7 +278,7 @@ function createPetWindow() {
     x, y,
     frame: false,
     transparent: true,
-    resizable: false,
+    resizable: true,      // 必须为 true，否则 Windows 会把窗口尺寸锁死（见 setPetWindowSize）
     movable: true,
     skipTaskbar: true,
     alwaysOnTop: true,
@@ -231,6 +301,15 @@ function createPetWindow() {
   petWin.setAlwaysOnTop(true, 'floating');
 
   if (DEV) petWin.webContents.openDevTools({ mode: 'detach' });
+
+  // 拦住用户拖边缘改尺寸。桌宠的大小只该由设置里的滑块决定，
+  // 否则用户会不小心把窗口拖成一个奇怪的尺寸 —— 而且那种改动还会
+  // 和他自己的立绘比例对不上。程序自己调 setSize 时 petSizing 为 true，放行。
+  petWin.on('will-resize', (e) => {
+    if (!petSizing) e.preventDefault();
+  });
+
+  watchPetResize();
 
   petWin.on('closed', () => { petWin = null; });
   return petWin;
@@ -619,7 +698,16 @@ function wireIpc() {
 
   ipcMain.handle('pet:dragMove', (_e, sx, sy) => {
     if (!petDrag || !petWin || petWin.isDestroyed()) return;
-    petWin.setPosition(Math.round(petDrag.wx + sx - petDrag.sx), Math.round(petDrag.wy + sy - petDrag.sy));
+    const nx = Math.round(petDrag.wx + sx - petDrag.sx);
+    const ny = Math.round(petDrag.wy + sy - petDrag.sy);
+
+    // 拖的时候也要收敛，否则能把桌宠整个拖出屏幕外，用户就再也找不回来了。
+    // 允许留 80px 露在外面，方便往边缘塞。
+    const area = screen.getPrimaryDisplay().workArea;
+    petWin.setPosition(
+      Math.min(Math.max(nx, area.x - petSize.width + 80), area.x + area.width - 80),
+      Math.min(Math.max(ny, area.y), area.y + area.height - 80)
+    );
   });
 
   ipcMain.handle('pet:dragEnd', () => {
