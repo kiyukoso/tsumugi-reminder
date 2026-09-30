@@ -1,6 +1,6 @@
 {
   "name": "reminder",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "事件提醒应用 — 待办事项、提醒时间、提醒间隔与桌面桌宠",
   "main": "src/main/main.js",
   "scripts": {
