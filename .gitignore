@@ -1,6 +1,7 @@
 # 依赖与构建产物
 node_modules/
 dist/
+*.zip
 
 # 开发期临时文件：调试截图、日志
 *.log

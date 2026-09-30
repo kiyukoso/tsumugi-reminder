@@ -8,6 +8,7 @@
     "dev": "electron . --dev --remote-debugging-port=9222",
     "cutout": "node tools/cutout.js",
     "test": "node tools/_selftest.js",
+    "zip": "node tools/make-zip.js",
     "dist": "electron-builder --win nsis",
     "release": "electron-builder --win nsis --publish never && node tools/release.js"
   },
