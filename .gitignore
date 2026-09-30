@@ -1,0 +1,22 @@
+# 依赖与构建产物
+node_modules/
+dist/
+
+# 开发期临时文件：调试截图、日志
+*.log
+shot_*.png
+packed_*.png
+cust_*.png
+pet_*.png
+app_pet*.png
+old_pet*.png
+cut_*.png
+
+# Windows 杂物
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# 编辑器
+.vscode/
+.idea/

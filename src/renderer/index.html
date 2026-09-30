@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<!-- 自定义图片是以 blob URL 交给 CSS 的，所以 img-src 必须放行 blob:，
+     否则背景会静默变成一片白（fetch 那类诊断也会被 connect-src 一起挡掉） -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' blob:" />
+<title>事件提醒</title>
+<link rel="stylesheet" href="css/theme.css" />
+</head>
+<body>
+
+<!-- ==================================================== 进入界面（背景图2） -->
+<div id="splash">
+  <div class="splash-inner">
+    <h1>事件提醒</h1>
+    <div class="sub">Reminder</div>
+    <div class="hint">点击任意处进入</div>
+  </div>
+</div>
+
+<!-- ==================================================== 主界面（背景图1） -->
+<div id="app">
+  <div class="win-controls">
+    <button id="btnMin" class="icon-btn" title="最小化">&#8212;</button>
+    <button id="btnClose" class="icon-btn danger" title="关闭">&#10005;</button>
+  </div>
+
+  <div class="col">
+
+    <!-- 实时时间 -->
+    <div class="card clock-card">
+      <div class="clock-left">
+        <div class="clock-date" id="clockDate">----</div>
+        <div class="clock-time" id="clockTime">--:--:--</div>
+      </div>
+      <div class="clock-right">
+        <button id="btnPet" class="icon-btn" title="显示 / 隐藏桌宠">&#9737;</button>
+        <button id="btnSettings" class="icon-btn" title="设置">&#9881;</button>
+      </div>
+    </div>
+
+    <!-- 待办列表 -->
+    <div class="card list-card">
+      <div class="card-title">待办事项 <span class="count" id="todoCount"></span></div>
+      <div class="todo-list" id="todoList"></div>
+      <div class="empty" id="emptyHint">还没有待办，在下面添加一条</div>
+    </div>
+
+    <!-- 新建 -->
+    <div class="card new-card">
+      <input id="newText" class="field" placeholder="要做什么…（回车即可添加）" maxlength="120" />
+      <div class="row">
+        <input id="newDue" type="datetime-local" class="field" title="提醒时间" />
+        <select id="newInterval" class="field" title="提醒间隔：到点没处理就每隔这么久再响一次">
+          <option value="0">不重复提醒</option>
+          <option value="5">每 5 分钟再响</option>
+          <option value="10">每 10 分钟再响</option>
+          <option value="15" selected>每 15 分钟再响</option>
+          <option value="30">每 30 分钟再响</option>
+          <option value="60">每 1 小时再响</option>
+        </select>
+        <select id="newRepeat" class="field" title="周期重复">
+          <option value="">不周期重复</option>
+          <option value="1:hour">每小时</option>
+          <option value="1:day">每天</option>
+          <option value="1:week">每周</option>
+        </select>
+      </div>
+      <div class="row">
+        <button id="btnAdd" class="btn primary" style="flex:1">添加待办</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ==================================================== 到点提醒 -->
+<div id="alertLayer" class="layer hidden">
+  <div class="dialog alert-dialog">
+    <div class="alert-head">
+      <span class="alert-badge" id="alertBadge">提醒</span>
+      <span class="alert-due" id="alertDue"></span>
+    </div>
+    <div class="alert-text" id="alertText"></div>
+    <div class="alert-queue hidden" id="alertQueue"></div>
+    <div class="actions">
+      <button class="btn ghost" id="alertDismiss">停止</button>
+      <button class="btn" id="alertSnooze">稍后提醒</button>
+      <button class="btn primary" id="alertComplete">完成</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================================================== 退出选择 -->
+<div id="quitLayer" class="layer hidden">
+  <div class="dialog">
+    <h2>要怎么退出？</h2>
+    <div class="desc">
+      选择留在后台的话，主窗口会收起来，但提醒依然会照常触发。
+    </div>
+    <div class="actions" style="flex-direction:column; align-items:stretch; gap:9px;">
+      <button class="btn primary" id="quitPet" style="padding:12px">转入后台，桌宠留在桌面上</button>
+      <button class="btn" id="quitTray" style="padding:12px">最小化到托盘（不显示桌宠）</button>
+      <button class="btn danger" id="quitExit" style="padding:12px">完全退出</button>
+      <button class="btn ghost" id="quitCancel">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================================================== 设置 -->
+<div id="settingsLayer" class="layer hidden">
+  <div class="dialog settings-dialog">
+    <h2>设置</h2>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="look">外观</button>
+      <button class="tab" data-tab="alert">提醒</button>
+    </div>
+
+    <!-- ---------------------------------------------- 外观 -->
+    <div class="tab-panel" data-panel="look">
+
+      <div class="setting-block">
+        <div class="setting-row">
+          <div class="setting-label">开始界面</div>
+          <div class="setting-body">
+            <img class="thumb" id="thumb-splash" alt="" />
+            <select class="field" id="sel-splash"></select>
+          </div>
+        </div>
+        <div class="setting-row sub">
+          <div class="setting-label">裁切位置</div>
+          <div class="setting-body">
+            <span class="axis">横</span><input type="range" id="pos-splash-x" min="0" max="100" step="1" />
+            <span class="axis">纵</span><input type="range" id="pos-splash-y" min="0" max="100" step="1" />
+            <button class="btn small ghost" data-reset-pos="splash">居中</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="setting-block">
+        <div class="setting-row">
+          <div class="setting-label">主界面背景</div>
+          <div class="setting-body">
+            <img class="thumb" id="thumb-main" alt="" />
+            <select class="field" id="sel-main"></select>
+          </div>
+        </div>
+        <div class="setting-row sub">
+          <div class="setting-label">裁切位置</div>
+          <div class="setting-body">
+            <span class="axis">横</span><input type="range" id="pos-main-x" min="0" max="100" step="1" />
+            <span class="axis">纵</span><input type="range" id="pos-main-y" min="0" max="100" step="1" />
+            <button class="btn small ghost" data-reset-pos="main">居中</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="setting-block">
+        <div class="setting-row">
+          <div class="setting-label">桌宠立绘</div>
+          <div class="setting-body">
+            <img class="thumb tall" id="thumb-pet" alt="" />
+            <select class="field" id="sel-pet"></select>
+          </div>
+        </div>
+        <div class="setting-row sub">
+          <div class="setting-label">抠图</div>
+          <div class="setting-body">
+            <label class="check-line">
+              <input type="checkbox" id="petCutout" checked />
+              <span>自动去掉纯色/棋盘格背景</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-label">桌宠大小</div>
+        <div class="setting-body">
+          <!-- 初值必须写：range 不给 value 会取 min/max 中点，显示成 530 -->
+          <input type="range" id="petHeight" min="160" max="900" step="10" value="460" />
+          <span class="vol-num" id="petHeightNum">460</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ---------------------------------------------- 提醒 -->
+    <div class="tab-panel hidden" data-panel="alert">
+
+      <div class="setting-row">
+        <div class="setting-label">提示音</div>
+        <div class="setting-body">
+          <span class="sound-name" id="soundName">默认提示音</span>
+          <button class="btn small" id="btnPickSound">选择文件…</button>
+          <button class="btn small" id="btnPreview" title="试听">&#9654;</button>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-label">音量</div>
+        <div class="setting-body">
+          <input type="range" id="volRange" min="0" max="1" step="0.05" value="0.8" />
+          <span class="vol-num" id="volNum">80%</span>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-label">稍后提醒</div>
+        <div class="setting-body">
+          <input type="number" id="snoozeMin" class="field" min="1" max="120" step="1"
+                 style="width:80px" value="5" />
+          <span class="hint-inline">分钟后再次提醒</span>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn ghost" id="btnUseDefault">改用默认提示音</button>
+      </div>
+
+    </div>
+
+    <div class="settings-foot">
+      <div class="foot-info">
+        <span class="hint-inline" id="verText">—</span>
+        <span class="update-line" id="updateLine"></span>
+      </div>
+      <div class="foot-actions">
+        <button class="btn small ghost" id="btnUpdate">检查更新</button>
+        <button class="btn primary" id="btnSettingsClose">完成</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="js/sound.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

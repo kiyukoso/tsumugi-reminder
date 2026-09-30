@@ -1,0 +1,66 @@
+{
+  "name": "reminder",
+  "version": "1.0.0",
+  "description": "事件提醒应用 — 待办事项、提醒时间、提醒间隔与桌面桌宠",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev --remote-debugging-port=9222",
+    "cutout": "node tools/cutout.js",
+    "test": "node tools/_selftest.js",
+    "dist": "electron-builder --win nsis",
+    "release": "electron-builder --win nsis --publish always"
+  },
+  "author": "",
+  "license": "MIT",
+  "build": {
+    "appId": "com.ys.reminder",
+    "productName": "事件提醒",
+    "directories": {
+      "output": "dist"
+    },
+    "artifactName": "tsumugi-reminder-${version}-setup.${ext}",
+    "files": [
+      "src/**/*",
+      "package.json",
+      "assets/pet.png",
+      "assets/tray.png",
+      "assets/背景图1.jpg",
+      "assets/背景图2.jpg",
+      "assets/替换图1.jpg"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "kiyukoso",
+      "repo": "tsumugi-reminder"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "事件提醒"
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
+    "jpeg-js": "^0.4.4",
+    "pngjs": "^7.0.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  }
+}
