@@ -15,6 +15,7 @@ const path = require('path');
 const store = require('../src/main/store');
 const sound = require('../src/main/sound');
 const images = require('../src/main/images');
+const music = require('../src/main/music');
 const { Scheduler, nextOccurrence } = require('../src/main/scheduler');
 
 let pass = 0, fail = 0;
@@ -385,6 +386,72 @@ console.log('\n[抠图]');
   const cropped = cropBitmap(solid, W, H, { minX: 50, maxX: 150, minY: 50, maxY: 150 }, 8);
   eq('裁剪尺寸含 padding', [cropped.width, cropped.height], [117, 117]);
   eq('裁剪后字节数对得上', cropped.bmp.length, 117 * 117 * 4);
+}
+
+// ==================================================================== 背景音乐
+
+console.log('\n[背景音乐]');
+{
+  const musicDir = path.join(tmpRoot, 'music');
+  const srcDir = path.join(tmpRoot, 'msrc');
+  fs.mkdirSync(srcDir, { recursive: true });
+  music.init(musicDir);
+
+  const mp3 = path.join(srcDir, 'song one.mp3');
+  fs.writeFileSync(mp3, Buffer.from('ID3 fake audio bytes'));
+  const t = music.importTrack(mp3);
+  ok('导入音乐返回文件名与原名', !!t.file && t.name === 'song one.mp3');
+  ok('复制进 music 目录', fs.existsSync(path.join(musicDir, t.file)));
+
+  // 关键行为：源文件删掉之后歌还能放。音乐目录是人经常整理的地方，
+  // 只记路径的话整个歌单会一夜之间全失效。
+  fs.unlinkSync(mp3);
+  ok('源文件删除后仍能读到音频', !!music.readTrack(t.file));
+
+  eq('拒绝目录穿越', music.readTrack('../../etc/passwd'), null);
+
+  // MIDI 必须给出人话的错误，不能只回一句"不支持的格式"
+  let midErr = '';
+  try {
+    const m = path.join(srcDir, 'x.mid');
+    fs.writeFileSync(m, 'MThd');
+    music.importTrack(m);
+  } catch (e) { midErr = e.message; }
+  ok('拒绝 MIDI 并说明它是乐谱不是音频', midErr.includes('MIDI'), midErr);
+
+  let badErr = '';
+  try {
+    const b = path.join(srcDir, 'x.txt');
+    fs.writeFileSync(b, 'nope');
+    music.importTrack(b);
+  } catch (e) { badErr = e.message; }
+  ok('拒绝不支持的格式', badErr.includes('不支持'), badErr);
+
+  music.removeTrack(t.file);
+  ok('移除后文件确实删了', !fs.existsSync(path.join(musicDir, t.file)));
+  ok('移除不存在的文件不抛错', (() => {
+    try { music.removeTrack('不存在.mp3'); return true; } catch { return false; }
+  })());
+
+  const gone = music.missing([{ file: 'not-here.mp3' }]);
+  eq('能挑出歌单里已失效的条目', gone.length, 1);
+}
+
+{
+  // store 的音乐配置容错：脏数据不能把整个歌单弄没
+  const dir = path.join(tmpRoot, 'music-store');
+  store.init(dir);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'data.json'), JSON.stringify({
+    music: { enabled: true, mode: '乱码', volume: 99, tracks: [{ file: 'a.mp3', name: 'A' }, { nope: 1 }], current: 50 },
+  }));
+  store.load();
+  const m = store.get().music;
+  eq('非法模式退回顺序播放', m.mode, 'sequential');
+  eq('音量被夹到 0..1', m.volume, 1);
+  eq('缺 file 的条目被剔除', m.tracks.length, 1);
+  eq('越界的 current 被夹回', m.current, 0);
+  ok('开关保留', m.enabled === true);
 }
 
 // ==================================================================== 模块健全性

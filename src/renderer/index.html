@@ -2,10 +2,12 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<!-- 自定义图片是以 blob URL 交给 CSS 的，所以 img-src 必须放行 blob:，
-     否则背景会静默变成一片白（fetch 那类诊断也会被 connect-src 一起挡掉） -->
+<!-- blob: 必须同时出现在三个地方，少一个都会静默失败：
+       img-src   —— 自定义图片是以 blob 交给 CSS 的，否则背景变成一片白
+       media-src —— 背景音乐是以 blob 交给 <audio> 的，否则歌放不出来也没报错
+       connect-src —— 诊断用的 fetch(blob:) -->
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' blob:" />
+      content="default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' blob:" />
 <title>tsumugi-reminder</title>
 <link rel="stylesheet" href="css/theme.css" />
 </head>
@@ -22,6 +24,7 @@
 <!-- ==================================================== 主界面（背景图1） -->
 <div id="app">
   <div class="win-controls">
+    <button id="btnFullscreen" class="icon-btn" title="全屏（F11）">&#9974;</button>
     <button id="btnMin" class="icon-btn" title="最小化">&#8212;</button>
     <button id="btnClose" class="icon-btn danger" title="关闭">&#10005;</button>
   </div>
@@ -38,6 +41,24 @@
         <button id="btnPet" class="icon-btn" title="显示 / 隐藏桌宠">&#9737;</button>
         <button id="btnSettings" class="icon-btn" title="设置">&#9881;</button>
       </div>
+    </div>
+
+    <!-- 正在播放 -->
+    <div class="card player-card" id="playerCard">
+      <button class="icon-btn" id="btnPrev" title="上一首">
+        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 1.5h1.7v9H3zM10 1.5v9L4.9 6z"/></svg>
+      </button>
+      <button class="icon-btn play" id="btnPlay" title="播放 / 暂停">
+        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3.2 1.6v8.8L10.4 6z"/></svg>
+      </button>
+      <button class="icon-btn" id="btnNext" title="下一首">
+        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M9 1.5h1.7v9H9zM2 1.5l5.1 4.5L2 10.5z"/></svg>
+      </button>
+      <div class="player-info">
+        <div class="player-title" id="playerTitle">未添加音乐</div>
+        <div class="player-sub" id="playerSub">在设置 → 音乐里添加</div>
+      </div>
+      <button class="btn small ghost" id="btnMode" title="切换播放模式">顺序</button>
     </div>
 
     <!-- 待办列表 -->
@@ -116,6 +137,7 @@
     <div class="tabs">
       <button class="tab active" data-tab="look">外观</button>
       <button class="tab" data-tab="alert">提醒</button>
+      <button class="tab" data-tab="music">音乐</button>
     </div>
 
     <!-- ---------------------------------------------- 外观 -->
@@ -218,6 +240,61 @@
 
       <div class="actions">
         <button class="btn ghost" id="btnUseDefault">改用默认提示音</button>
+      </div>
+
+    </div>
+
+    <!-- ---------------------------------------------- 音乐 -->
+    <div class="tab-panel hidden" data-panel="music">
+
+      <div class="setting-row">
+        <div class="setting-label">背景音乐</div>
+        <div class="setting-body">
+          <label class="check-line">
+            <input type="checkbox" id="musicEnabled" />
+            <span>进入主界面时自动播放</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="setting-block">
+        <div class="setting-row">
+          <div class="setting-label">歌曲列表</div>
+          <div class="setting-body">
+            <span class="hint-inline" id="musicCount"></span>
+            <button class="btn small" id="btnAddMusic">添加音乐…</button>
+          </div>
+        </div>
+        <div class="music-list" id="musicList"></div>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-label">播放模式</div>
+        <div class="setting-body">
+          <select class="field" id="musicMode">
+            <option value="sequential">顺序播放</option>
+            <option value="one">单曲循环</option>
+            <option value="shuffle">随机播放</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-label">音量</div>
+        <div class="setting-body">
+          <input type="range" id="musicVolume" min="0" max="1" step="0.05" value="0.5" />
+          <span class="vol-num" id="musicVolumeNum">50%</span>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-label">隐藏时</div>
+        <div class="setting-body">
+          <label class="check-line">
+            <input type="checkbox" id="musicPauseHidden" />
+            <span>藏到托盘或桌宠后暂停播放</span>
+          </label>
+        </div>
       </div>
 
     </div>

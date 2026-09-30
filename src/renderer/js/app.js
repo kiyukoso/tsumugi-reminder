@@ -416,8 +416,238 @@ async function openSettings() {
   $('settingsLayer').classList.remove('hidden');
   await refreshImages();
 
+  // 歌单也要等浮层显示之后再回填，理由同图片
+  const mst = await window.api.musicState();
+  renderMusic(mst);
+  populateMusic(mst);
+
   // 打开设置时同步一次更新状态：后台那次检查的结果可能早就到了
   renderUpdate(await window.api.updateStatus());
+}
+
+// ------------------------------------------------------------------ 背景音乐
+
+/**
+ * 歌单、当前曲目、播放模式都由主进程持有（桌宠右键菜单在主进程里构建，
+ * 得能直接读能直接控）。这边只负责真正那个 <audio>。
+ *
+ * 播放走 blob URL 而不是 decodeAudioData：后者把整首歌解成未压缩 PCM，
+ * 一首 10MB 的 mp3 能膨胀到几十 MB 常驻内存；<audio> 是流式解码。
+ */
+const audio = new Audio();
+audio.preload = 'auto';
+
+const MUSIC_MIME = {
+  mp3: 'audio/mpeg', flac: 'audio/flac', wav: 'audio/wav',
+  m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg',
+  opus: 'audio/ogg', weba: 'audio/webm',
+};
+
+const ICON_PLAY = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3.2 1.6v8.8L10.4 6z"/></svg>';
+const ICON_PAUSE = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 1.6h2.4v8.8H3zM6.6 1.6H9v8.8H6.6z"/></svg>';
+const MODE_TEXT = { one: '单曲', sequential: '顺序', shuffle: '随机' };
+
+const stripExt = (n) => String(n || '').replace(/\.[^.]+$/, '');
+
+let musicStateCache = null;
+let currentBlobUrl = null;
+let loadToken = 0;      // 连续切歌时，用来作废掉过期的加载
+let loadedToken = 0;    // 最后一次真正加载完成的那个 token
+
+function renderMusic(st) {
+  if (!st) return;
+  musicStateCache = st;
+
+  const has = st.tracks.length > 0;
+  const track = has ? st.tracks[st.current] : null;
+
+  $('playerCard').classList.toggle('idle', !has);
+  $('playerTitle').textContent = track ? stripExt(track.name) : '未添加音乐';
+  $('playerSub').textContent = has
+    ? `${st.playing ? '正在播放' : '已暂停'} · 第 ${st.current + 1}/${st.tracks.length} 首`
+    : '在设置 → 音乐里添加';
+  $('btnMode').textContent = MODE_TEXT[st.mode] || '顺序';
+  $('btnPlay').innerHTML = st.playing ? ICON_PAUSE : ICON_PLAY;
+
+  audio.volume = st.volume;
+}
+
+/** 把真实的播放状态回报给主进程（桌宠菜单上的「播放/暂停」靠它显示正确） */
+function reportPlaying(playing) {
+  if (musicStateCache) {
+    musicStateCache.playing = playing;
+    renderMusic(musicStateCache);
+  }
+  window.api.musicReport({ playing, current: musicStateCache ? musicStateCache.current : -1 });
+}
+
+function playAudio() {
+  audio.play()
+    .then(() => reportPlaying(true))
+    .catch(err => {
+      // 最常见的原因是格式解不开。别静默 —— 用户只会觉得"音乐没响"，
+      // 而控制台里没有任何线索可查。
+      console.warn('[music] 播放失败:', err && err.message);
+      reportPlaying(false);
+    });
+}
+
+function pauseAudio() {
+  audio.pause();
+  reportPlaying(false);
+}
+
+/** 加载第 index 首。play=true 时加载完直接开始放。 */
+async function loadTrack(index, play) {
+  const st = musicStateCache;
+  if (!st || !st.tracks.length) return;
+  const track = st.tracks[index];
+  if (!track) return;
+
+  const token = ++loadToken;
+  const bytes = await window.api.musicBytes(track.file);
+  if (token !== loadToken) return;     // 期间又切了歌，这次作废
+
+  if (!bytes) {
+    $('playerSub').textContent = '文件找不到了，可能在设置里被移除过';
+    reportPlaying(false);
+    return;
+  }
+
+  const ext = String(track.file).split('.').pop().toLowerCase();
+  const url = URL.createObjectURL(new Blob([bytes], { type: MUSIC_MIME[ext] || 'audio/mpeg' }));
+
+  // 旧的 blob 要**延迟**释放，不能立刻 revoke：切歌那一刻 audio 元素可能
+  // 还在读上一首，立刻释放会让它触发一次 error 事件，状态就被误报成
+  //「已暂停」——菜单和按钮显示全错，但歌其实还在放。
+  const stale = currentBlobUrl;
+  currentBlobUrl = url;
+  loadedToken = token;
+  if (stale) setTimeout(() => URL.revokeObjectURL(stale), 5000);
+
+  audio.src = url;
+  audio.volume = st.volume;
+  if (play) playAudio();
+  else reportPlaying(false);
+}
+
+/** 进入主界面时开始播放 */
+function startMusic() {
+  const st = musicStateCache;
+  if (!st || !st.enabled || !st.tracks.length) return;
+  if (audio.src && !audio.paused) return;    // 已经在放了，别重头开始
+  loadTrack(st.current, true);
+}
+
+/** 藏到托盘/桌宠时的处理，由主进程显式通知（比赌 visibilitychange 可靠） */
+function onBackground(hidden) {
+  const st = musicStateCache;
+  if (!st || !st.tracks.length) return;
+  if (hidden) {
+    if (st.pauseWhenHidden && !audio.paused) pauseAudio();
+  } else if (st.enabled && audio.paused && !st.pauseWhenHidden) {
+    // 回到前台接着放。之前是手动暂停的就别自作主张
+    if (audio.src) playAudio();
+  }
+}
+
+audio.addEventListener('ended', () => {
+  window.api.musicStep(1, true);            // auto=true：单曲循环时原地重放
+});
+
+audio.addEventListener('error', () => {
+  // 切歌途中上一首残留的 error 不该算数，否则会把新歌的状态报成"已暂停"
+  if (loadToken !== loadedToken) return;
+  console.warn('[music] 音频加载出错:', audio.error && audio.error.message);
+  reportPlaying(false);
+});
+
+window.api.onMusicControl(({ action, state }) => {
+  if (state) renderMusic(state);
+  if (action === 'load') {
+    loadTrack(state.current, true);
+  } else if (action === 'toggle') {
+    if (!audio.src) loadTrack(state.current, true);
+    else if (audio.paused) playAudio();
+    else pauseAudio();
+  } else if (action === 'stop') {
+    pauseAudio();
+    audio.removeAttribute('src');
+    if (currentBlobUrl) { URL.revokeObjectURL(currentBlobUrl); currentBlobUrl = null; }
+  }
+});
+
+// 主进程改了状态（切歌、调音量、切模式、歌单增删）时刷新界面
+window.api.onMusicState((st) => {
+  const prevCurrent = musicStateCache ? musicStateCache.current : -1;
+  renderMusic(st);
+  if (!$('settingsLayer').classList.contains('hidden')) renderMusicList(st);
+
+  // 已经是启用状态但从没加载过（比如刚在设置里添加了歌），补一次
+  if (st.enabled && st.tracks.length && !audio.src) loadTrack(st.current, true);
+  else if (st.enabled && st.tracks.length && prevCurrent !== st.current && !audio.src) loadTrack(st.current, true);
+});
+
+// ------------------------------------------------------------------ 歌曲列表（设置面板）
+
+function renderMusicList(st) {
+  const list = $('musicList');
+  list.textContent = '';
+  $('musicCount').textContent = st.tracks.length ? `共 ${st.tracks.length} 首` : '';
+
+  if (!st.tracks.length) {
+    const empty = document.createElement('div');
+    empty.className = 'music-empty';
+    empty.textContent = '还没有音乐。点右边「添加音乐…」选文件，可以一次选多首。';
+    list.appendChild(empty);
+    return;
+  }
+
+  st.tracks.forEach((t, i) => {
+    const row = document.createElement('div');
+    row.className = 'music-item' + (i === st.current ? ' current' : '');
+
+    const idx = document.createElement('span');
+    idx.className = 'idx';
+    idx.textContent = i === st.current ? '♪' : String(i + 1);
+
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = stripExt(t.name);
+    name.title = `${t.name}（点一下播这首）`;
+    name.onclick = () => window.api.musicSelect(i);
+
+    const acts = document.createElement('div');
+    acts.className = 'acts';
+
+    const mk = (text, cls, title, disabled, fn) => {
+      const b = document.createElement('button');
+      b.className = 'icon-btn' + (cls ? ' ' + cls : '');
+      b.textContent = text;
+      b.title = title;
+      b.disabled = !!disabled;
+      b.onclick = fn;
+      return b;
+    };
+
+    acts.append(
+      mk('↑', '', '上移', i === 0, () => window.api.musicMove(i, i - 1)),
+      mk('↓', '', '下移', i === st.tracks.length - 1, () => window.api.musicMove(i, i + 1)),
+      mk('✕', 'danger', '从歌单移除（原文件不动）', false, () => window.api.musicRemove(t.file)),
+    );
+
+    row.append(idx, name, acts);
+    list.appendChild(row);
+  });
+}
+
+function populateMusic(st) {
+  $('musicEnabled').checked = !!st.enabled;
+  $('musicMode').value = st.mode;
+  $('musicVolume').value = st.volume;
+  $('musicVolumeNum').textContent = Math.round(st.volume * 100) + '%';
+  $('musicPauseHidden').checked = !!st.pauseWhenHidden;
+  renderMusicList(st);
 }
 
 // ------------------------------------------------------------------ 自动更新
@@ -510,6 +740,9 @@ function enterApp() {
   splash.classList.add('gone');
   $('app').classList.add('on');
   setTimeout(() => splash.classList.add('hidden'), 780);
+
+  // 音乐等进入主界面之后再起，别在进入画面上就开始放
+  setTimeout(startMusic, 300);
 }
 
 async function init() {
@@ -555,6 +788,66 @@ async function init() {
 
   $('snoozeMin').addEventListener('change', (e) => {
     window.api.setSnoozeMin(e.target.value).then(v => { e.target.value = v; });
+  });
+
+  // ---- 背景音乐
+  $('btnPlay').onclick = () => window.api.musicToggle();
+  $('btnPrev').onclick = () => window.api.musicStep(-1, false);
+  $('btnNext').onclick = () => window.api.musicStep(1, false);
+
+  $('btnMode').onclick = async () => {
+    const order = ['sequential', 'one', 'shuffle'];
+    const cur = musicStateCache ? musicStateCache.mode : 'sequential';
+    const res = await window.api.musicSet({ mode: order[(order.indexOf(cur) + 1) % order.length] });
+    renderMusic(res);
+    $('musicMode').value = res.mode;
+  };
+
+  $('btnAddMusic').onclick = async () => {
+    const res = await window.api.musicAdd();
+    if (res && res.ok) {
+      const st = await window.api.musicState();
+      renderMusic(st);
+      populateMusic(st);
+    }
+  };
+
+  $('musicEnabled').addEventListener('change', async (e) => {
+    renderMusic(await window.api.musicSet({ enabled: e.target.checked }));
+  });
+
+  $('musicMode').addEventListener('change', async (e) => {
+    renderMusic(await window.api.musicSet({ mode: e.target.value }));
+  });
+
+  // 音量拖动时本地即时生效，松手才落盘
+  $('musicVolume').addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    $('musicVolumeNum').textContent = Math.round(v * 100) + '%';
+    audio.volume = v;
+    if (musicStateCache) musicStateCache.volume = v;
+  });
+  $('musicVolume').addEventListener('change', (e) => window.api.musicSet({ volume: Number(e.target.value) }));
+
+  $('musicPauseHidden').addEventListener('change', (e) => {
+    window.api.musicSet({ pauseWhenHidden: e.target.checked });
+  });
+
+  window.api.onBackground((hidden) => onBackground(hidden));
+
+  // ---- 全屏
+  $('btnFullscreen').onclick = () => window.api.toggleFullscreen();
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'F11') { e.preventDefault(); window.api.toggleFullscreen(); }
+    else if (e.key === 'Escape' && document.body.classList.contains('fullscreen')) {
+      window.api.toggleFullscreen();
+    }
+  });
+
+  window.api.onFullscreenChanged((on) => {
+    document.body.classList.toggle('fullscreen', on);
+    $('btnFullscreen').title = on ? '退出全屏（Esc）' : '全屏（F11）';
   });
 
   // ---- 自动更新
@@ -675,6 +968,9 @@ async function init() {
   todos = await window.api.listTodos();
   renderTodos();
   await refreshImages();
+
+  // 音乐状态要先拿到，enterApp 里才知道该不该起播
+  renderMusic(await window.api.musicState());
 
   const s = await window.api.getSound();
   await Sound.setConfig(s.config, s.data);

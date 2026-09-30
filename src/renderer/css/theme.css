@@ -137,13 +137,17 @@ body { background: #fff; }
 
 #app.on { opacity: 1; }
 
-/* 右半边放内容 —— 背景图1 的角色在左侧，右边是干净的白色区域 */
+/* 右半边放内容 —— 背景图1 的角色在左侧，右边是干净的白色区域。
+ *
+ * 宽度封顶 + 边距按视口伸缩，这样全屏（2560 宽）时右栏不会跟着拉成一条
+ * 一千多像素宽的横条，也不会把内容甩到屏幕最边上。
+ * 1280 宽的默认窗口下 47vw≈601，和原来写死的 604 基本一致。 */
 .col {
   position: absolute;
-  top: 30px;
-  right: 42px;
-  bottom: 30px;
-  width: 604px;
+  top: clamp(20px, 4vh, 56px);
+  right: clamp(20px, 3.5vw, 88px);
+  bottom: clamp(20px, 4vh, 56px);
+  width: clamp(380px, 47vw, 604px);
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -184,6 +188,50 @@ body { background: #fff; }
 
 .clock-left { display: flex; flex-direction: column; gap: 5px; }
 .clock-right { display: flex; align-items: center; gap: 10px; }
+
+/* ---------------------------------------------------------- 正在播放 */
+
+.player-card {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 12px;
+}
+
+/* 图标按钮里塞的是内联 SVG：用图形不用字符，因为 ▶ ⏸ 这类码位在
+   Windows 上常被 Segoe UI Emoji 抢走，渲染成彩色 emoji，风格会跳 */
+.player-card .icon-btn svg {
+  width: 13px;
+  height: 13px;
+  fill: currentColor;
+  display: block;
+}
+
+.icon-btn.play { color: var(--accent-deep); }
+.icon-btn.play:hover { background: var(--accent-hover); }
+
+.player-info { flex: 1; min-width: 0; margin-left: 4px; }
+
+.player-title {
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.player-sub {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 没有歌的时候整条压暗，别让人以为坏了 */
+.player-card.idle .player-title { color: var(--text-faint); }
+.player-card.idle .icon-btn { opacity: 0.4; }
 
 /* ---------------------------------------------------------- 待办列表 */
 
@@ -676,6 +724,71 @@ select.field option { color: var(--text); background: #fff; }
 }
 
 .hint-inline { font-size: 13px; color: var(--text-dim); }
+
+/* ---------------------------------------------------------- 歌曲列表 */
+
+.music-list {
+  max-height: 156px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 0 2px;
+}
+
+.music-list::-webkit-scrollbar { width: 7px; }
+.music-list::-webkit-scrollbar-thumb {
+  background: rgba(86, 128, 228, 0.24);
+  border-radius: 4px;
+}
+
+.music-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  color: var(--text);
+  transition: background 0.16s;
+}
+
+.music-item:hover { background: var(--accent-soft); }
+
+/* 正在播的那首高亮，扫一眼就知道放到哪了 */
+.music-item.current {
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+  font-weight: 600;
+}
+
+.music-item .idx {
+  flex: none;
+  width: 18px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.music-item .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.music-item .acts { display: flex; gap: 1px; flex: none; opacity: 0; transition: opacity 0.16s; }
+.music-item:hover .acts { opacity: 1; }
+
+.music-empty {
+  color: var(--text-faint);
+  font-size: 12.5px;
+  text-align: center;
+  padding: 14px 0;
+  line-height: 1.7;
+}
 
 .settings-foot {
   display: flex;

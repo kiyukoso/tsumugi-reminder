@@ -65,6 +65,25 @@ contextBridge.exposeInMainWorld('api', {
   promptClose: () => ipcRenderer.invoke('prompt:close'),
   promptSubmit: (mode, value) => ipcRenderer.invoke('prompt:submit', mode, value),
 
+  // ---------------------------------------------------------- 背景音乐
+  musicState: () => ipcRenderer.invoke('music:state'),
+  musicBytes: (file) => ipcRenderer.invoke('music:bytes', file),
+  musicAdd: () => ipcRenderer.invoke('music:add'),
+  musicRemove: (file) => ipcRenderer.invoke('music:remove', file),
+  musicMove: (from, to) => ipcRenderer.invoke('music:move', from, to),
+  musicSet: (patch) => ipcRenderer.invoke('music:set', patch),
+  musicSelect: (i) => ipcRenderer.invoke('music:select', i),
+  musicStep: (dir, auto) => ipcRenderer.invoke('music:step', dir, auto),
+  musicToggle: () => ipcRenderer.invoke('music:toggle'),
+  musicReport: (st) => ipcRenderer.invoke('music:status', st),
+  onMusicState: (cb) => sub('music:state', cb),
+  onMusicControl: (cb) => sub('music:control', cb),
+  onBackground: (cb) => sub('window:background', cb),
+
+  // ---------------------------------------------------------- 全屏
+  toggleFullscreen: () => ipcRenderer.invoke('window:fullscreen'),
+  onFullscreenChanged: (cb) => sub('window:fullscreenChanged', cb),
+
   // ---------------------------------------------------------- 自动更新
   updateStatus: () => ipcRenderer.invoke('update:status'),
   updateCheck: () => ipcRenderer.invoke('update:check'),

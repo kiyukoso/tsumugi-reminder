@@ -36,10 +36,20 @@ const DEFAULTS = {
     splashPos: { x: 50, y: 50 },
     mainPos: { x: 50, y: 50 },
   },
+  // 背景音乐。默认关闭 —— 需求就是「初始无音乐」，用户自己在设置里加。
+  music: {
+    enabled: false,
+    mode: 'sequential',      // 'one' 单曲循环 | 'sequential' 顺序 | 'shuffle' 随机
+    volume: 0.5,
+    pauseWhenHidden: false,  // 藏到托盘/桌宠时是否暂停
+    tracks: [],              // [{ file, name, size }]
+    current: 0,              // 当前曲目下标
+  },
   snoozeMin: 5,        // 「稍后提醒」推迟多少分钟
 };
 
 const IMAGE_KEYS = ['splash', 'main', 'pet'];
+const MUSIC_MODES = ['one', 'sequential', 'shuffle'];
 
 let dir = null;
 let file = null;
@@ -76,6 +86,31 @@ function newId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+/** 音乐配置容错：脏数据不能让整个歌单消失 */
+function normalizeMusic(raw) {
+  const out = clone(DEFAULTS.music);
+  if (!raw || typeof raw !== 'object') return out;
+
+  out.enabled = raw.enabled === true;
+  out.pauseWhenHidden = raw.pauseWhenHidden === true;
+  if (MUSIC_MODES.includes(raw.mode)) out.mode = raw.mode;
+  if (Number.isFinite(raw.volume)) out.volume = Math.min(1, Math.max(0, raw.volume));
+
+  if (Array.isArray(raw.tracks)) {
+    out.tracks = raw.tracks
+      .filter(t => t && typeof t.file === 'string' && t.file)
+      .map(t => ({
+        file: t.file,
+        name: typeof t.name === 'string' && t.name ? t.name : t.file,
+        size: Number.isFinite(t.size) ? t.size : 0,
+      }));
+  }
+
+  const cur = Number.isFinite(raw.current) ? Math.round(raw.current) : 0;
+  out.current = out.tracks.length ? Math.min(Math.max(0, cur), out.tracks.length - 1) : 0;
+  return out;
+}
+
 /** 图片配置容错：坏值一律退回内置默认，别让一张脏数据把界面搞白 */
 function normalizeImages(raw) {
   const out = clone(DEFAULTS.images);
@@ -110,6 +145,7 @@ function load() {
     data.sound = { ...DEFAULTS.sound, ...(raw.sound || {}) };
     data.pet = { ...DEFAULTS.pet, ...(raw.pet || {}) };
     data.images = normalizeImages(raw.images);
+    data.music = normalizeMusic(raw.music);
     data.todos = Array.isArray(raw.todos) ? raw.todos.map(normalizeTodo) : [];
     if (!Number.isFinite(data.snoozeMin) || data.snoozeMin <= 0) data.snoozeMin = DEFAULTS.snoozeMin;
   } catch (err) {
@@ -180,6 +216,17 @@ function setPet(patch) {
   return data.pet;
 }
 
+// ------------------------------------------------------------------ 音乐
+
+function setMusic(patch) {
+  Object.assign(data.music, patch);
+  // 歌单变短之后 current 可能越界，顺手夹一下
+  const n = data.music.tracks.length;
+  data.music.current = n ? Math.min(Math.max(0, data.music.current), n - 1) : 0;
+  save();
+  return data.music;
+}
+
 // ------------------------------------------------------------------ 图片
 
 function setImage(key, spec) {
@@ -204,7 +251,7 @@ function setImagePos(key, patch) {
 module.exports = {
   init, load, save, get, getSoundsDir,
   addTodo, updateTodo, removeTodo,
-  setSound, setPet, setImage, setImagePos,
+  setSound, setPet, setImage, setImagePos, setMusic,
   newId,
-  DEFAULTS, IMAGE_KEYS,
+  DEFAULTS, IMAGE_KEYS, MUSIC_MODES,
 };

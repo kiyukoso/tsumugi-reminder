@@ -10,6 +10,7 @@ const {
 const store = require('./store');
 const sound = require('./sound');
 const images = require('./images');
+const music = require('./music');
 const updater = require('./updater');
 const { Scheduler } = require('./scheduler');
 
@@ -69,9 +70,11 @@ function createMainWindow() {
   mainWin = new BrowserWindow({
     width: MAIN_W,
     height: MAIN_H,
-    resizable: false,
-    maximizable: false,
-    fullscreenable: false,
+    // 支持全屏和拖边缘改大小。界面已经改成自适应的（右侧栏宽度封顶、
+    // 边距按屏幕比例伸缩），所以拉大不会把布局扯散。
+    resizable: true,
+    maximizable: true,
+    fullscreenable: true,
     frame: false,
     show: false,
     backgroundColor: '#ffffff',
@@ -99,6 +102,15 @@ function createMainWindow() {
     mainWin.webContents.send('quit:ask');
   });
 
+  // 全屏状态推给界面，右上角那个按钮才能显示对
+  const pushFullScreen = () => {
+    if (mainWin && !mainWin.isDestroyed()) {
+      mainWin.webContents.send('window:fullscreenChanged', mainWin.isFullScreen());
+    }
+  };
+  mainWin.on('enter-full-screen', pushFullScreen);
+  mainWin.on('leave-full-screen', pushFullScreen);
+
   mainWin.on('closed', () => { mainWin = null; });
 
   if (DEV) mainWin.webContents.openDevTools({ mode: 'detach' });
@@ -111,6 +123,10 @@ function summonMainWindow() {
   if (!mainWin) { createMainWindow(); return; }
   if (mainWin.isMinimized()) mainWin.restore();
   mainWin.show();
+
+  // 显式告诉渲染进程"回到前台了"。比赌 visibilitychange 可靠 ——
+  // Electron 隐藏窗口时页面可见性未必跟着变，音乐「隐藏暂停」就会失灵。
+  if (!mainWin.isDestroyed()) mainWin.webContents.send('window:background', false);
   // show()+focus() 在 Windows 上未必能压过当前前台窗口，
   // 短暂置顶一次是最省事又可靠的抢焦点办法。
   mainWin.setAlwaysOnTop(true);
@@ -180,6 +196,74 @@ function setPetWindowSize(w, h) {
   petSizing = true;
   petWin.setSize(w, h);
   petSizing = false;
+}
+
+// ==================================================================== 背景音乐
+
+/**
+ * 歌单、当前曲目、播放模式都由主进程持有 —— 因为桌宠的右键菜单是在主进程
+ * 里构建的，它得能直接读到状态、也能直接发号施令，不必绕到渲染进程去问。
+ *
+ * 渲染进程只负责真正那个 <audio> 元素。这边的 status.playing 是**渲染进程
+ * 上报的真实状态**，不是意图 —— 用户点暂停、歌放完了、格式解不开，都会如实
+ * 反映过来，菜单上的「播放 / 暂停」才不会显示错。
+ */
+let musicStatus = { playing: false, current: -1 };
+
+function musicState() {
+  const m = store.get().music;
+  return {
+    enabled: m.enabled,
+    mode: m.mode,
+    volume: m.volume,
+    pauseWhenHidden: m.pauseWhenHidden,
+    tracks: m.tracks,
+    current: m.current,
+    playing: musicStatus.playing,
+  };
+}
+
+/** 把状态推给主界面。桌宠菜单是按需构建的，不用推。 */
+function pushMusic() {
+  if (mainWin && !mainWin.isDestroyed()) {
+    mainWin.webContents.send('music:state', musicState());
+  }
+}
+
+/** 给渲染进程下指令：'load' 换曲（重头放）| 'toggle' 播放暂停 | 'stop' */
+function musicCommand(action) {
+  if (mainWin && !mainWin.isDestroyed()) {
+    mainWin.webContents.send('music:control', { action, state: musicState() });
+  }
+}
+
+/** 下一首的下标。手动点「下一首」和自动放完走的是同一条路，只是 auto 时单曲循环会原地重放 */
+function nextIndex(dir) {
+  const m = store.get().music;
+  const n = m.tracks.length;
+  if (!n) return 0;
+  if (m.mode === 'shuffle' && n > 1) {
+    let i;
+    do { i = Math.floor(Math.random() * n); } while (i === m.current);
+    return i;
+  }
+  return (m.current + dir + n) % n;
+}
+
+function stepTrack(dir, auto) {
+  const m = store.get().music;
+  if (!m.tracks.length) return musicState();
+
+  // 单曲循环 + 自动放完 = 同一首从头再来
+  if (auto && m.mode === 'one') {
+    musicCommand('load');
+    return musicState();
+  }
+
+  store.setMusic({ current: nextIndex(dir) });
+  musicCommand('load');
+  pushMusic();
+  return musicState();
 }
 
 let petResizeFix = null;
@@ -549,6 +633,141 @@ function wireIpc() {
     return n;
   });
 
+  // ---- 背景音乐
+  ipcMain.handle('music:state', () => musicState());
+
+  // 渲染进程拿音频原始字节做 blob URL。
+  // 不用 decodeAudioData：那会把整首歌解成未压缩 PCM 塞进内存，
+  // 一首 10MB 的 mp3 能膨胀成几十 MB；<audio> + blob 是流式解码，省得多。
+  ipcMain.handle('music:bytes', (_e, file) => music.readTrack(file));
+
+  ipcMain.handle('window:fullscreen', () => {
+    if (!mainWin || mainWin.isDestroyed()) return false;
+    const next = !mainWin.isFullScreen();
+    mainWin.setFullScreen(next);
+    return next;
+  });
+
+  ipcMain.handle('music:add', async () => {
+    const parent = mainWin && !mainWin.isDestroyed() ? mainWin : undefined;
+    const res = await dialog.showOpenDialog(parent, {
+      title: '添加音乐',
+      properties: ['openFile', 'multiSelections'],
+      filters: music.FILTERS,
+    });
+    if (res.canceled || !res.filePaths.length) return { ok: false, canceled: true };
+
+    const added = [];
+    const failed = [];
+    for (const p of res.filePaths) {
+      try {
+        added.push(await Promise.resolve(music.importTrack(p)));
+      } catch (err) {
+        failed.push(`${path.basename(p)}：${err.message}`);
+      }
+    }
+    if (added.length) {
+      store.setMusic({ tracks: [...store.get().music.tracks, ...added], enabled: true });
+      pushMusic();
+    }
+    if (failed.length) {
+      dialog.showMessageBox(parent, {
+        type: 'warning',
+        title: added.length ? '部分文件没能添加' : '没能添加',
+        message: failed.join('\n'),
+      });
+    }
+    return { ok: added.length > 0, added: added.length, failed };
+  });
+
+  ipcMain.handle('music:remove', (_e, file) => {
+    const m = store.get().music;
+    const idx = m.tracks.findIndex(t => t.file === file);
+    if (idx === -1) return musicState();
+
+    const wasCurrent = m.current === idx;
+    const tracks = m.tracks.slice();
+    tracks.splice(idx, 1);
+    music.removeTrack(file);
+
+    // 删掉的正好是当前这首：退一首，越界就夹回末尾
+    let current = m.current;
+    if (wasCurrent) current = Math.min(current, tracks.length - 1);
+    else if (idx < m.current) current = m.current - 1;
+
+    store.setMusic({ tracks, current: Math.max(0, current) });
+
+    if (wasCurrent && tracks.length) musicCommand('load');
+    else if (!tracks.length) musicCommand('stop');
+
+    pushMusic();
+    refreshTrayMenu();
+    return musicState();
+  });
+
+  ipcMain.handle('music:move', (_e, from, to) => {
+    const m = store.get().music;
+    const n = m.tracks.length;
+    if (from < 0 || from >= n || to < 0 || to >= n || from === to) return musicState();
+
+    const tracks = m.tracks.slice();
+    const [t] = tracks.splice(from, 1);
+    tracks.splice(to, 0, t);
+
+    // 当前曲目要跟着它自己走，否则挪一下顺序就跳到别的歌上去了
+    let current = m.current;
+    if (current === from) current = to;
+    else if (from < current && to >= current) current--;
+    else if (from > current && to <= current) current++;
+
+    store.setMusic({ tracks, current });
+    pushMusic();
+    return musicState();
+  });
+
+  ipcMain.handle('music:set', (_e, patch) => {
+    const allow = {};
+    if (patch && typeof patch === 'object') {
+      if (typeof patch.enabled === 'boolean') allow.enabled = patch.enabled;
+      if (store.MUSIC_MODES.includes(patch.mode)) allow.mode = patch.mode;
+      if (typeof patch.pauseWhenHidden === 'boolean') allow.pauseWhenHidden = patch.pauseWhenHidden;
+      if (Number.isFinite(patch.volume)) allow.volume = Math.min(1, Math.max(0, patch.volume));
+    }
+    store.setMusic(allow);
+
+    // 开关一关就停，一开就从头放当前这首
+    if ('enabled' in allow) musicCommand(allow.enabled ? 'load' : 'stop');
+    pushMusic();
+    refreshTrayMenu();
+    return musicState();
+  });
+
+  ipcMain.handle('music:select', (_e, index) => {
+    const m = store.get().music;
+    if (!m.tracks.length) return musicState();
+    const i = Math.min(Math.max(0, Math.round(Number(index) || 0)), m.tracks.length - 1);
+    store.setMusic({ current: i, enabled: true });
+    musicCommand('load');
+    pushMusic();
+    return musicState();
+  });
+
+  ipcMain.handle('music:step', (_e, dir, auto) => stepTrack(dir < 0 ? -1 : 1, !!auto));
+
+  ipcMain.handle('music:toggle', () => {
+    if (!store.get().music.enabled || !store.get().music.tracks.length) return musicState();
+    musicCommand('toggle');
+    return musicState();
+  });
+
+  // 渲染进程上报真实播放状态（用户点暂停、歌放完了、解码失败都会走到这里）
+  ipcMain.handle('music:status', (_e, st) => {
+    if (st && typeof st === 'object') {
+      musicStatus = { playing: !!st.playing, current: Number.isFinite(st.current) ? st.current : -1 };
+    }
+    return musicStatus;
+  });
+
   // ---- 自动更新
   ipcMain.handle('update:status', () => updater.getStatus());
   ipcMain.handle('update:check', () => updater.check());
@@ -773,7 +992,10 @@ function wireIpc() {
     }
     createTray();
     if (choice === 'pet') showPet(); else hidePet();
-    if (mainWin && !mainWin.isDestroyed()) mainWin.hide();
+    if (mainWin && !mainWin.isDestroyed()) {
+      mainWin.webContents.send('window:background', true);
+      mainWin.hide();
+    }
     refreshTrayMenu();
   });
 
@@ -839,12 +1061,59 @@ function showPetMenu() {
       } },
     { label: '稍后提醒 5 分钟', enabled: !!todo, click: () => { if (todo) { scheduler.snooze(todo.id, store.get().snoozeMin); broadcastTodos(); } } },
     { type: 'separator' },
+
+    // 音乐控制。右键桌宠就能切歌，不用把主界面翻出来。
+    { label: `音乐：${musicLabel()}`, submenu: buildMusicMenu() },
+
+    { type: 'separator' },
     { label: '打开主界面', click: () => summonMainWindow() },
     { label: '隐藏桌宠', click: () => { hidePet(); refreshTrayMenu(); } },
     { label: '完全退出', click: () => { reallyQuitting = true; app.quit(); } },
   ];
 
   Menu.buildFromTemplate(template).popup({ window: petWin });
+}
+
+/** 菜单标题上那行状态文字：没歌单、已暂停、还是正在放哪首歌 */
+function musicLabel() {
+  const m = store.get().music;
+  if (!m.tracks.length) return '未添加音乐';
+  const t = m.tracks[m.current];
+  const name = t ? t.name.replace(/\.[^.]+$/, '').slice(0, 16) : '(无)';
+  return musicStatus.playing ? `播放中 · ${name}` : `已暂停 · ${name}`;
+}
+
+const MODE_LABEL = { one: '单曲循环', sequential: '顺序播放', shuffle: '随机播放' };
+
+function buildMusicMenu() {
+  const m = store.get().music;
+  const has = m.tracks.length > 0;
+
+  return [
+    {
+      label: musicStatus.playing ? '暂停' : '播放',
+      enabled: has,
+      click: () => { musicCommand('toggle'); },
+    },
+    { label: '上一首', enabled: has, click: () => stepTrack(-1, false) },
+    { label: '下一首', enabled: has, click: () => stepTrack(1, false) },
+    { type: 'separator' },
+    {
+      label: '播放模式',
+      enabled: has,
+      submenu: store.MUSIC_MODES.map(mode => ({
+        label: MODE_LABEL[mode],
+        type: 'radio',
+        checked: m.mode === mode,
+        click: () => { store.setMusic({ mode }); pushMusic(); },
+      })),
+    },
+    {
+      label: '停止播放',
+      enabled: has,
+      click: () => { musicCommand('stop'); },
+    },
+  ];
 }
 
 function setRepeat(todo, repeat) {
@@ -868,6 +1137,7 @@ if (!app.requestSingleInstanceLock()) {
     store.init(app.getPath('userData'));
     store.load();
     images.init(ASSETS, path.join(app.getPath('userData'), 'images'));
+    music.init(path.join(app.getPath('userData'), 'music'));
     petSize = computePetSize();
 
     scheduler = new Scheduler(store, onFire, broadcastTodos);
