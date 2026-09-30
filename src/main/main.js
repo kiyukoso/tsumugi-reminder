@@ -75,7 +75,7 @@ function createMainWindow() {
     frame: false,
     show: false,
     backgroundColor: '#ffffff',
-    title: '事件提醒',
+    title: 'tsumugi-reminder',
     icon: path.join(ASSETS, 'tray.png'),
     webPreferences: {
       preload: PRELOAD,
@@ -448,7 +448,7 @@ function createTray() {
   if (tray && !tray.isDestroyed()) return tray;
   const icon = nativeImage.createFromPath(path.join(ASSETS, 'tray.png')).resize({ width: 16, height: 16 });
   tray = new Tray(icon);
-  tray.setToolTip('事件提醒');
+  tray.setToolTip('tsumugi-reminder');
   tray.on('click', () => summonMainWindow());
   tray.on('double-click', () => summonMainWindow());
   refreshTrayMenu();

@@ -1,4 +1,4 @@
-# 事件提醒
+# tsumugi-reminder
 
 一个桌面提醒应用：待办事项、提醒时间、提醒间隔，退出时可选择留在后台，
 用桌面桌宠继续提醒。
@@ -205,7 +205,7 @@ node tools/_drive.js shot index out.png    # 不受遮挡、不会拿到旧帧
 > 它就这样点掉过一个「完成」按钮，看起来特别像应用自己的 bug。
 
 `_shot.ps1` 是按**精确像素尺寸**选窗口的，因为进程名过滤有两个坑：打包版的
-进程叫 `事件提醒.exe` 不叫 `electron.exe`，而中文参数从 bash 传进 Windows
+进程名不是 `electron.exe`（现在是 `tsumugi-reminder.exe`），而中文参数从 bash 传进 Windows
 PowerShell 会按 GBK 解析成乱码。拿到窗口后若要传给 `-Proc`，用 `"*"` 即可。
 
 另外这些 `.ps1` **必须保持纯 ASCII** —— 这台机器上 PowerShell 会把非 ASCII
